@@ -4,8 +4,11 @@ import (
 	"context"
 
 	"github.com/omni-network/omni/halo/attest/types"
+	"github.com/omni-network/omni/lib/errors"
+	"github.com/omni-network/omni/lib/netconf"
 	"github.com/omni-network/omni/lib/xchain"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -46,7 +49,12 @@ func (k *Keeper) LatestAttestation(ctx context.Context, req *types.LatestAttesta
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	return &types.LatestAttestationResponse{Attestation: AttestationFromDB(att, sigs)}, nil
+	consensusChainID, err := getConsensusChainID(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "consensus chain id")
+	}
+
+	return &types.LatestAttestationResponse{Attestation: AttestationFromDB(att, consensusChainID, sigs)}, nil
 }
 
 func (k *Keeper) EarliestAttestation(ctx context.Context, req *types.EarliestAttestationRequest) (*types.EarliestAttestationResponse, error) {
@@ -68,7 +76,12 @@ func (k *Keeper) EarliestAttestation(ctx context.Context, req *types.EarliestAtt
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	return &types.EarliestAttestationResponse{Attestation: AttestationFromDB(att, sigs)}, nil
+	consensusChainID, err := getConsensusChainID(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "get consensus chain id")
+	}
+
+	return &types.EarliestAttestationResponse{Attestation: AttestationFromDB(att, consensusChainID, sigs)}, nil
 }
 
 func (k *Keeper) ListAllAttestations(ctx context.Context, req *types.ListAllAttestationsRequest) (*types.ListAllAttestationsResponse, error) {
@@ -97,4 +110,9 @@ func (k *Keeper) WindowCompare(ctx context.Context, req *types.WindowCompareRequ
 	}
 
 	return &types.WindowCompareResponse{Cmp: int32(cmp)}, nil
+}
+
+func getConsensusChainID(ctx context.Context) (uint64, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	return netconf.ConsensusChainIDStr2Uint64(sdkCtx.ChainID())
 }
