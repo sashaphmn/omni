@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/omni-network/omni/e2e/app/agent"
 	"github.com/omni-network/omni/e2e/docker"
@@ -282,12 +283,19 @@ func (p *Provider) StartNodes(ctx context.Context, _ ...*e2e.Node) error {
 	var onceErr error
 	p.once.Do(func() {
 		log.Info(ctx, "Copying artifacts to VMs")
+		timestamp := time.Now()
 		for vmName := range p.Data.VMs {
-			err := copyToVM(ctx, vmName, p.Testnet.Dir)
-			if err != nil {
-				onceErr = errors.Wrap(err, "copy files", "vm", vmName)
+			err_vm := copyToVM(ctx, vmName, p.Testnet.Dir)
+			if err_vm != nil {
+				onceErr = errors.Wrap(err_vm, "copy files to VM", "vm", vmName)
 				return
 			}
+			go func(vmName string) {
+				err_ := copyToGCP(ctx, vmName, p.Testnet.Name, p.Testnet.Dir, timestamp.Format(time.RFC3339))
+				if err_ != nil {
+					onceErr = errors.Wrap(err_, "copy files to GCP", "vm", vmName)
+				}
+			}(vmName)
 		}
 
 		log.Info(ctx, "Starting VM deployments")
@@ -375,6 +383,18 @@ func copyToVM(ctx context.Context, vmName string, path string) error {
 	cmd.Dir = filepath.Dir(path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.Wrap(err, "copy to VM", "output", string(out))
+	}
+
+	return nil
+}
+
+func copyToGCP(ctx context.Context, vmName string, network string, path string, identifier string) error {
+	cpgcp := fmt.Sprintf("tar czf %s.tar.gz %s && gcloud storage cp %s.tar.gz gs://e2e-configs/%s/%s/%s", vmName, path, vmName, network, identifier, vmName)
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", cpgcp)
+	cmd.Dir = filepath.Dir(path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return errors.Wrap(err, "copy to GCP", "output", string(out))
 	}
 
 	return nil
