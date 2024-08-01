@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/omni-network/omni/contracts/bindings"
+	rtypes "github.com/omni-network/omni/halo/registry/types"
+	"github.com/omni-network/omni/lib/cchain"
 	"github.com/omni-network/omni/lib/errors"
 	"github.com/omni-network/omni/lib/evmchain"
 	"github.com/omni-network/omni/lib/expbackoff"
@@ -14,11 +16,12 @@ import (
 	"github.com/omni-network/omni/lib/xchain"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
 )
 
-// AwaitOnChain blocks and returns network configuration as soon as it can be loaded from the on-chain registry.
+// AwaitOnExecutionChain blocks and returns network configuration as soon as it can be loaded from the EVM Execution Chain's registry.
 // It only returns an error if the context is canceled.
-func AwaitOnChain(ctx context.Context, netID ID, portalRegistry *bindings.PortalRegistry, expected []string) (Network, error) {
+func AwaitOnExecutionChain(ctx context.Context, netID ID, portalRegistry *bindings.PortalRegistry, expected []string) (Network, error) {
 	if netID == Simnet {
 		return SimnetNetwork(), nil
 	}
@@ -63,6 +66,53 @@ func AwaitOnChain(ctx context.Context, netID ID, portalRegistry *bindings.Portal
 	}
 }
 
+// AwaitOnConsensusChain blocks and returns network configuration as soon as it can be loaded from the Consensus Chain's registry.
+func AwaitOnConsensusChain(ctx context.Context, netID ID, cprov cchain.Provider, expected []string) (Network, error) {
+	if netID == Simnet {
+		return SimnetNetwork(), nil
+	}
+
+	cfg := expbackoff.DefaultConfig
+	cfg.MaxDelay = 5 * time.Second
+	backoff := expbackoff.New(ctx, expbackoff.With(cfg))
+
+	for {
+		if ctx.Err() != nil {
+			return Network{}, errors.Wrap(ctx.Err(), "provider timeout")
+		}
+
+		portals, ok, err := cprov.Portals(ctx)
+		if err != nil || !ok {
+			log.Warn(ctx, "Failed fetching registry from consensus chain (will retry)", err)
+			backoff()
+
+			continue
+		}
+
+		if portals == nil {
+			return Network{}, errors.New("nil portals response")
+		}
+
+		network := networkFromRtypesPortals(ctx, netID, portals)
+
+		if !containsAll(network, expected) {
+			log.Info(ctx, "XChain registry doesn't contain all expected chains (will retry)", ""+
+				"expected", expected, "actual", network.ChainNamesByIDs())
+			backoff()
+
+			continue
+		}
+
+		if err := network.Verify(); err != nil {
+			return Network{}, errors.Wrap(err, "invalid network configuration")
+		}
+
+		log.Info(ctx, "XChain network configuration initialized from on-chain registry", "chains", network.ChainNamesByIDs())
+
+		return network, nil
+	}
+}
+
 // containsAll returns true if the network contains the all expected chains (by name or ID).
 func containsAll(network Network, expected []string) bool {
 	want := make(map[string]struct{}, len(expected))
@@ -83,11 +133,11 @@ func networkFromPortals(ctx context.Context, network ID, portals []bindings.Port
 	for _, portal := range portals {
 		// Ephemeral networks may contain mock portals for testing purposes, just ignore them.
 		if _, ok := evmchain.MetadataByID(portal.ChainId); !ok && network.IsEphemeral() {
-			log.Warn(ctx, "Ignoring epheral network mock portal", nil, "chain_id", portal.ChainId)
+			log.Warn(ctx, "Ignoring ephemeral network mock portal", nil, "chain_id", portal.ChainId)
 			continue
 		}
 
-		// PortalRegistry garuntees BlockPeriod <= int64 max, but we check here to be safe.
+		// PortalRegistry guarantees BlockPeriod <= int64 max, but we check here to be safe.
 		blockPeriod := time.Duration(int64(portal.BlockPeriod))
 		if blockPeriod < 0 {
 			return Network{}, errors.New("block period overflow", "period", portal.BlockPeriod)
@@ -111,6 +161,40 @@ func networkFromPortals(ctx context.Context, network ID, portals []bindings.Port
 		ID:     network,
 		Chains: chains,
 	}, nil
+}
+
+// TODO: Combine & de-dup with method above.
+func networkFromRtypesPortals(ctx context.Context, network ID, portals []*rtypes.Portal) Network {
+	namer := ChainNamer(network)
+
+	var chains []Chain
+	for _, portal := range portals {
+		// Ephemeral networks may contain mock portals for testing purposes, just ignore them.
+		if _, ok := evmchain.MetadataByID(portal.ChainId); !ok && network.IsEphemeral() {
+			log.Warn(ctx, "Ignoring epheral network mock portal", nil, "chain_id", portal.ChainId)
+			continue
+		}
+
+		chains = append(chains, Chain{
+			ID:            portal.ChainId,
+			Name:          namer(portal.ChainId),
+			PortalAddress: common.BytesToAddress(portal.GetAddress()),
+			DeployHeight:  portal.DeployHeight,
+			// TODO: How can I get this info?
+			BlockPeriod: 0,
+			Shards:      toShardIDs(portal.GetShardIds()),
+			// TODO: How can I get this info?
+			AttestInterval: 0,
+		})
+	}
+
+	// Add omni consensus chain
+	chains = append(chains, network.Static().OmniConsensusChain())
+
+	return Network{
+		ID:     network,
+		Chains: chains,
+	}
 }
 
 func MetadataByID(network ID, chainID uint64) evmchain.Metadata {
