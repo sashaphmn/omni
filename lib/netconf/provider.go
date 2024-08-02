@@ -165,8 +165,6 @@ func networkFromPortals(ctx context.Context, network ID, portals []bindings.Port
 
 // TODO: Combine & de-dup with method above.
 func networkFromRtypesPortals(ctx context.Context, network ID, portals []*rtypes.Portal) Network {
-	namer := ChainNamer(network)
-
 	var chains []Chain
 	for _, portal := range portals {
 		// Ephemeral networks may contain mock portals for testing purposes, just ignore them.
@@ -176,15 +174,13 @@ func networkFromRtypesPortals(ctx context.Context, network ID, portals []*rtypes
 		}
 
 		chains = append(chains, Chain{
-			ID:            portal.ChainId,
-			Name:          namer(portal.ChainId),
-			PortalAddress: common.BytesToAddress(portal.GetAddress()),
-			DeployHeight:  portal.DeployHeight,
-			// TODO: How can I get this info?
-			BlockPeriod: 0,
-			Shards:      toShardIDs(portal.GetShardIds()),
-			// TODO: How can I get this info?
-			AttestInterval: 0,
+			ID:             portal.GetChainId(),
+			Name:           portal.GetName(),
+			PortalAddress:  common.BytesToAddress(portal.GetAddress()),
+			DeployHeight:   portal.GetDeployHeight(),
+			BlockPeriod:    time.Duration(portal.GetBlockPeriod()) * time.Millisecond,
+			Shards:         toShardIDs(portal.GetShardIds()),
+			AttestInterval: portal.GetAttestInterval(),
 		})
 	}
 
