@@ -36,9 +36,7 @@ func (k *Keeper) evmEvents(ctx context.Context, blockHash common.Hash) ([]*types
 			return cmp < 0
 		}
 
-		topicI := slices.Concat(events[i].Topics...)
-		topicJ := slices.Concat(events[j].Topics...)
-		if cmp := bytes.Compare(topicI, topicJ); cmp != 0 {
+		if cmp := slices.CompareFunc(events[i].Topics, events[j].Topics, bytes.Compare); cmp != 0 {
 			return cmp < 0
 		}
 
